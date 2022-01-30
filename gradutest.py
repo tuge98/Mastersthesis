@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.stats as si
+from sklearn.preprocessing import MinMaxScaler
 """
 from keras.models import Sequential
 from keras.layers import Dense, Dropout, Activation, LeakyReLU
@@ -31,7 +32,15 @@ daatta7 = pd.read_csv(r"C:\Users\q8606\Desktop\GRADUTUTKIMUKSET\data7.csv", sep=
 
 #data for calculating volatility
 df = pd.read_csv(r'C:\Users\q8606\Desktop\GRADUTUTKIMUKSET\FTSE100.csv', sep=";")
+rfdata = pd.read_csv(r'C:\Users\q8606\Desktop\GRADUTUTKIMUKSET\rfdata.csv', sep=",")
 
+
+rfdata["Name"] = pd.to_datetime(rfdata['Name'], format = '%Y-%m-%d')
+rfdata["Name"] = rfdata["Name"].dt.strftime("%d.%m.%y")
+rfdata["Name"] = pd.to_datetime(rfdata['Name'], format = "%d.%m.%y")
+rfdata["RF"] = pd.to_numeric(rfdata["RF"],errors = 'coerce')
+rfdata["RF"] = rfdata["RF"].div(100).round(3)
+#print(rfdata)
 #Calculating volatilities
 df["FTSE 100 - PRICE INDEX"]=df["FTSE 100 - PRICE INDEX"].str.replace(',','.')
 df["FTSE 100 - TOT RETURN IND"] = df["FTSE 100 - TOT RETURN IND"].str.replace(',','.')
@@ -46,6 +55,7 @@ window_size60d = 42
 df["1mvol"] = df["indeksi"].pct_change().rolling(window_size1m).std()*(252**0.5)
 df["3mvol"] = df["indeksi"].pct_change().rolling(window_size3m).std()*(252**0.5)
 df["60dvol"] = df["indeksi"].pct_change().rolling(window_size60d).std()*(252**0.5)
+df["MA"] = df["indeksi"].rolling(window = 100).mean()
 
 print(df)
 
@@ -142,7 +152,8 @@ df1["TTM"] = df1["TTM"] / 252
 #adding volatilities to the dataframe
 df1 = df1.rename(columns={'Name_x': 'Name'})
 df1 = df1.merge(df, on = "Name")
-
+df1 = df1.merge(rfdata, on = "Name")
+#df1["RF"] = df1.RF.astype("float")
 
 #removing observations based on hutchinson
 
@@ -207,20 +218,65 @@ def blackscholes(S, K, T, r, sigma):
 
 
 
-df1["bsprice"] = blackscholes(df1["UNDERLYING"],df1["STRIKE"],df1["TTM"],0.01,df1["3mvol"])
+df1["bsprice"] = blackscholes(df1["UNDERLYING"],df1["STRIKE"],df1["TTM"],df1["RF"],df1["3mvol"])
 df1["bsprice"]=df1["bsprice"].round(4)
 df1 = df1.dropna()
 df1 = df1.drop_duplicates()
 print(df1)
 
+
+
+
+
+
+
+
+
+
+
+df1["UNDERLYING"] = df1["UNDERLYING"]/df1["STRIKE"]
+df1["CALL_PRICE"] = df1["CALL_PRICE"]/df1["STRIKE"]
+df1["bsprice"] = df1["bsprice"]/df1["STRIKE"]
+
+#print(df1)
+
+
+
+
+#startdate = pd.to_datetime("2021-01-01").date()
+#enddate = pd.to_datetime("2021-12-16").date()
+#postcovid
+
+
+#rslt_df = df1.loc[(df1['Name'] >= "2020-01-01")
+                     #& (df1['Name'] < "2020-11-01")]
+
+
+
+#print(rslt_df)
+
+
+#X = df1[['STRIKE', 'TTM','1mvol','3mvol','UNDERLYING']]
+#X=rslt_df[['Moneyness', 'TTM']]
+#X = X.astype("int")
+
+#y=rslt_df['CALL_PRICE']
+#y = y.astype("int")
+
+
+
+
+#scaling other outputs
+scaler=MinMaxScaler(feature_range=(0,1))
+df1['MA'] = scaler.fit_transform(df1[["MA"]])
+print(df1)
+
+X=df1[['Moneyness', 'TTM', 'MA','60dvol']]
+y=df1['CALL_PRICE']
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=42)
+
+
 """
-
-
-
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
-
-
-
 nodes = 30
 model = Sequential()
 
@@ -232,11 +288,13 @@ model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy']
 
 
 arvot = model.fit(X_train, y_train, batch_size=10, epochs=10)
+"""
 
 
 
 
 
+"""
 model = Sequential()
 model.add(Dense(1024, input_dim=X.shape[-1], activation='relu'))
 model.add(Dropout(.25))
@@ -246,6 +304,35 @@ model.add(Dense(1, activation='linear'))
 model.compile(loss='mse', optimizer='adam')
 model.fit(X_train, y_train, epochs=100, validation_split=.1, verbose=1, batch_size=256)
 
+"""
+def custom_activation(x):
+    return backend.exp(x)
+
+
+nodes = 120
+model = Sequential()
+
+model.add(Dense(nodes, input_dim=X_train.shape[1]))
+model.add(LeakyReLU())
+model.add(Dropout(0.25))
+
+model.add(Dense(nodes, activation='elu'))
+model.add(Dropout(0.25))
+
+model.add(Dense(nodes, activation='relu'))
+model.add(Dropout(0.25))
+
+model.add(Dense(nodes, activation='elu'))
+model.add(Dropout(0.25))
+
+model.add(Dense(1))
+model.add(Activation(custom_activation))
+          
+model.compile(loss='mse',optimizer='rmsprop')
+
+#fitting neural network
+model.fit(X_train, y_train, batch_size=64, epochs=10, validation_split=0.1, verbose=2)
+#model.fit(X_train, y_train, batch_size=128, epochs=10, validation_split=0.1, verbose=2)
 def CheckAccuracy(y,y_hat):
     stats = dict()
     
@@ -262,11 +349,21 @@ def CheckAccuracy(y,y_hat):
     
     stats['mpe'] = np.sqrt(stats['mse'])/np.mean(y)
     print("Mean Percent Error:      ", stats['mpe'])
+    
+    plt.scatter(y, y_hat,color='black',linewidth=0.3,alpha=0.4, s=0.5)
+    plt.xlabel('Actual Price',fontsize=20,fontname='Times New Roman')
+    plt.ylabel('Predicted Price',fontsize=20,fontname='Times New Roman') 
+    plt.show()
+    
+    
+    plt.hist(stats['diff'], bins=50,edgecolor='black',color='white')
+    plt.xlabel('Diff')
+    plt.ylabel('Density')
+    plt.show()
 
 
 y_train_hat = model.predict(X_train)
 #reduce dim (240000,1) -> (240000,) to match y_train's dim
 y_train_hat = np.squeeze(y_train_hat)
 CheckAccuracy(y_train, y_train_hat)
-model.evaluate(X_test, y_test)
-"""
+CheckAccuracy(df1["CALL_PRICE"],df1["bsprice"])
